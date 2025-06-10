@@ -222,8 +222,8 @@ def train(
                 acc = rest[0] if rest else -1
                 loss = outputs.loss
 
-                loss = loss / gradient_accumulation_steps
-                acc = acc / gradient_accumulation_steps
+                # loss = loss / gradient_accumulation_steps
+                # acc = acc / gradient_accumulation_steps
 
                 if log_config.use_wandb and step % log_config.log_interval == 0:
                     if train_config.enable_fsdp or train_config.enable_ddp:

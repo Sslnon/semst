@@ -4,8 +4,8 @@ from slam_llm.utils.deepspeed_utils import deepspeed_main_wrapper
 import logging
 from dataclasses import dataclass, field
 from omegaconf import DictConfig, ListConfig, OmegaConf
-from asr_config import ModelConfig, TrainConfig, DataConfig, LogConfig
-
+from asr_config import ModelConfig, TrainConfig, DataConfig, LogConfig, FSDPConfig
+from typing import Optional
 
 @dataclass
 class RunConfig:
@@ -13,10 +13,13 @@ class RunConfig:
     model_config: ModelConfig = field(default_factory=ModelConfig)
     train_config: TrainConfig = field(default_factory=TrainConfig)
     log_config: LogConfig = field(default_factory=LogConfig)
+    fsdp_config: FSDPConfig = field(default_factory=FSDPConfig)
     debug: bool = field(default=False, metadata={"help": "Use pdb when true"})
     metric: str = field(default="acc", metadata={"help": "The metric for evaluation"})
     deepspeed_config: str = field(default="examples/asr_librispeech/conf/ds_config.json", metadata={"help": "The metric for evaluation"})
-
+    ckpt_path: Optional[str] = field(
+        default=None, metadata={"help": "The path to projector checkpoint"}
+    )
 
 @deepspeed_main_wrapper(config_name=None, version_base=None)
 def main_hydra(cfg: DictConfig):

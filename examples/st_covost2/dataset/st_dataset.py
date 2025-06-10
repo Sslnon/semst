@@ -50,19 +50,21 @@ class SpeechDatasetJsonl(torch.utils.data.Dataset):
                 for line in fin:
                     data_dict = json.loads(line.strip())
                     data_source = data_dict["source"]
-                    if self.source==data_source:
-                        self.data_list.append(data_dict)
-                    elif self.source == "all":
-                        self.data_list.append(data_dict)
+                    self.data_list.append(data_dict)
+                    # if self.source==data_source:
+                    #     self.data_list.append(data_dict)
+                    # elif self.source == "all":
+                    #     self.data_list.append(data_dict)
         else:
             with open(dataset_config.val_data_path, encoding='utf-8') as fin:
                 for line in fin:
                     data_dict = json.loads(line.strip())
                     data_source = data_dict["source"]
-                    if self.source==data_source:
-                        self.data_list.append(data_dict)
-                    elif self.source == "all":
-                        self.data_list.append(data_dict)
+                    self.data_list.append(data_dict)
+                    # if self.source==data_source:
+                    #     self.data_list.append(data_dict)
+                    # elif self.source == "all":
+                    #     self.data_list.append(data_dict)
 
                         
                     # self.data_list = self.data_list[:10000]
