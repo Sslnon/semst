@@ -3,10 +3,10 @@ import json
 import os
 
 # 设置输入输出路径
-split="train"
+split="test"
 lang="zh-CN"
-tsv_path = f"/work/2024/lixuanchen/data/cv-corpus-20.0-2024-12-06/{lang}/validated.tsv"
-output_jsonl_path = f"/work/2024/lixuanchen/project/SLAM-LLM/examples/st_covost2/manifest/big_{lang}_asr_{split}.jsonl"
+tsv_path = f"/work/2024/lixuanchen/data/cv-corpus-20.0-2024-12-06/{lang}/test.tsv"
+output_jsonl_path = f"/work/2024/lixuanchen/project/SLAM-LLM/examples/st_covost2/manifest/{lang}_asr_{split}.jsonl"
 
 with open(tsv_path, encoding="utf-8") as tsv_file, open(output_jsonl_path, "w", encoding="utf-8") as out_file:
     reader = csv.DictReader(tsv_file, delimiter="\t")

@@ -43,7 +43,8 @@ from slam_llm.utils.deepspeed_utils import (
 
 import sys
 import logging
-import wandb
+# import wandb
+import swanlab
 
 import hydra
 from omegaconf import DictConfig, ListConfig, OmegaConf
@@ -131,13 +132,22 @@ def main(kwargs: DictConfig):
         logger.info("model_config: {}".format(model_config))
         logger.info("log_config: {}".format(log_config))
 
-    # Set wandb
+    # set swanlab
     if rank == 0:
-        if log_config.use_wandb:
-            if not os.path.exists(log_config.wandb_dir):
-                os.makedirs(log_config.wandb_dir, exist_ok=True)
-            wandb_config={"train_config": train_config, "model_config": model_config, "log_config": log_config}
-            wandb.init(dir=log_config.wandb_dir, entity=log_config.wandb_entity_name, project=log_config.wandb_project_name,name=log_config.wandb_exp_name ,config=wandb_config)
+        if log_config.use_swanlab:
+            if not os.path.exists(log_config.swanlab_dir):
+                os.makedirs(log_config.swanlab_dir, exist_ok=True)
+            swanlab_config={"train_config": train_config, "model_config": model_config, "log_config": log_config, "deepspeed_config":deepspeed_config}
+            swanlab.init(dir=log_config.swanlab_dir, entity=log_config.swanlab_entity_name, project=log_config.swanlab_project_name,name=log_config.swanlab_exp_name ,config=swanlab_config)
+
+
+    # Set wandb
+    # if rank == 0:
+    #     if log_config.use_wandb:
+    #         if not os.path.exists(log_config.wandb_dir):
+    #             os.makedirs(log_config.wandb_dir, exist_ok=True)
+    #         wandb_config={"train_config": train_config, "model_config": model_config, "log_config": log_config}
+    #         wandb.init(dir=log_config.wandb_dir, entity=log_config.wandb_entity_name, project=log_config.wandb_project_name,name=log_config.wandb_exp_name ,config=wandb_config)
 
 
     model_factory = get_custom_model_factory(model_config, logger)
@@ -179,9 +189,12 @@ def main(kwargs: DictConfig):
 
     # dataset_config = generate_dataset_config(train_config, kwargs)
     logger.info("dataset_config: {}".format(dataset_config))
+    # if rank == 0:
+    #     if log_config.use_wandb:
+    #         wandb.config.update({"dataset_config": dataset_config})
     if rank == 0:
-        if log_config.use_wandb:
-            wandb.config.update({"dataset_config": dataset_config})
+        if log_config.use_swanlab:
+            swanlab.config.update({"dataset_config": dataset_config})
     
     # Load and preprocess the dataset for training and validation
     dataset_train = get_preprocessed_dataset(
@@ -241,9 +254,12 @@ def main(kwargs: DictConfig):
     if rank==0:
         [logger.info(f'Key: {k}, Value: {v}') for k, v in results.items()]
 
+    # if rank == 0:
+    #     if log_config.use_wandb:
+    #         wandb.finish()
     if rank == 0:
-        if log_config.use_wandb:
-            wandb.finish()
+        if log_config.use_swanlab:
+            swanlab.finish()
 
 if __name__ == "__main__":
     main_hydra()

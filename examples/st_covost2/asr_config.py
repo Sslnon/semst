@@ -127,11 +127,16 @@ class FSDPConfig:
 
 @dataclass
 class LogConfig:
-    use_wandb: bool = False
-    wandb_dir: str = "test_wandb"
-    wandb_entity_name: str = "sdinger"
-    wandb_project_name: str = "project_name"
-    wandb_exp_name: str = "exp_name"
+    # use_wandb: bool = False
+    # wandb_dir: str = "test_wandb"
+    # wandb_entity_name: str = "sdinger"
+    # wandb_project_name: str = "project_name"
+    # wandb_exp_name: str = "exp_name"
+    use_swanlab: bool = False
+    swanlab_dir: str = "test_wandb"
+    swanlab_entity_name: str = "sdinger"
+    swanlab_project_name: str = "project_name"
+    swanlab_exp_name: str = "exp_name"
     log_file: str = "./test.log"
     log_interval: int = 50
     decode_log: str = "./test.log"
