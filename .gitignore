@@ -19,6 +19,8 @@ data/
 jobs/
 debug/
 audio/
+examples/st_covost2/manifest/
+examples/st_covost2/utils/
 examples/st_covost2/scripts/st_pretrain_ds.sh
 examples/st_covost2/scripts/asr_pretrain_ds.sh
 
