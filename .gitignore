@@ -15,6 +15,8 @@ data/
 jobs/
 debug/
 audio/
+examples/st_covost2/scripts/st_pretrain_ds.sh
+examples/st_covost2/scripts/asr_pretrain_ds.sh
 
 examples/s2s/scripts/debug
 examples/vsr_LRS3/scripts/decode_avhubert_vo_vicuna_7b_noself.sh
