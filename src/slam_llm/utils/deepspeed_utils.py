@@ -199,8 +199,8 @@ def train(
             total_loss = 0.0
             total_acc = 0.0
             if train_config.batching_strategy != "dynamic":
-                total_length = len(train_dataloader)//gradient_accumulation_steps
-                pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length, dynamic_ncols=True)
+                total_length = len(train_dataloader)
+                pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", total=total_length//gradient_accumulation_steps, dynamic_ncols=True)
             else:
                 pbar = tqdm(colour="blue", desc=f"Training Epoch: {epoch+1}", dynamic_ncols=True)
             for step, batch in enumerate(train_dataloader):
@@ -232,6 +232,7 @@ def train(
                                 {
                                     "train_inner/train_inner_loss": loss,
                                     "train_inner/train_inner_accuracy": acc,
+                                    "train_inner/current_lr":model.optimizer.param_groups[0]['lr'],
                                 },
                                 step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
                             )
@@ -240,6 +241,7 @@ def train(
                             {
                                 "train_inner/train_inner_loss": loss,
                                 "train_inner/train_inner_accuracy": acc,
+                                "train_inner/current_lr":model.optimizer.param_groups[0]['lr'],
                             },
                             step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
                         )

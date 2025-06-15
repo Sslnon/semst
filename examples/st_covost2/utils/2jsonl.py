@@ -18,7 +18,7 @@ with open(tsv_path, encoding="utf-8") as tsv_file, open(output_jsonl_path, "w", 
         # 构造新的 JSON 字典
         json_obj = {
             "audio": f"/work/2024/lixuanchen/data/cv-corpus-20.0-2024-12-06/zh-CN/clips/{audio_file}",
-            "prompt": f"<|ASR|>",
+            "prompt": f"<|en|><|asr|>",
             "gt": sentence,
             "source": "common_voice"
         }
