@@ -39,7 +39,8 @@ from slam_llm.policies import fpSixteen, bfSixteen_mixed, get_llama_wrapper
 from slam_llm.utils.memory_utils import MemoryTrace
 from slam_llm.utils.metric import compute_accuracy
 
-import wandb
+# import wandb
+import swanlab
 import logging
 
 logger = logging.getLogger(__name__)
@@ -225,10 +226,11 @@ def train(
                 # loss = loss / gradient_accumulation_steps
                 # acc = acc / gradient_accumulation_steps
 
-                if log_config.use_wandb and step % log_config.log_interval == 0:
+                if log_config.use_swanlab and step % log_config.log_interval == 0:
+                # if log_config.use_wandb and step % log_config.log_interval == 0:
                     if train_config.enable_fsdp or train_config.enable_ddp:
                         if rank == 0:
-                            wandb.log(
+                            swanlab.log(
                                 {
                                     "train_inner/train_inner_loss": loss,
                                     "train_inner/train_inner_accuracy": acc,
@@ -237,7 +239,7 @@ def train(
                                 step=(epoch * total_length + step) if train_config.batching_strategy != "dynamic" else step + 1,
                             )
                     else:
-                        wandb.log(
+                        swanlab.log(
                             {
                                 "train_inner/train_inner_loss": loss,
                                 "train_inner/train_inner_accuracy": acc,
@@ -300,9 +302,9 @@ def train(
                     else:
                         val_acc.append(-1)
 
-                    if log_config.use_wandb:
+                    if log_config.use_swanlab:
                         if rank == 0:
-                            wandb.log(
+                            swanlab.log(
                                 {
                                     "valid/val_epoch_loss": eval_epoch_loss,
                                     "valid/val_perplexity": eval_ppl,
@@ -349,10 +351,10 @@ def train(
         train_loss.append(train_epoch_loss)
         train_acc.append(train_epoch_acc)
 
-        if log_config.use_wandb:
+        if log_config.use_swanlab:
             if train_config.enable_fsdp or train_config.enable_ddp:
                 if rank == 0:
-                    wandb.log(
+                    swanlab.log(
                         {
                             "train/train_perplexity": train_perplexity,
                             "train/train_epoch_loss": train_epoch_loss,
@@ -360,7 +362,7 @@ def train(
                         }
                     )
             else:
-                wandb.log(
+                swanlab.log(
                     {
                         "train/train_perplexity": train_perplexity,
                         "train/train_epoch_loss": train_epoch_loss,

@@ -10,6 +10,10 @@ transformers
 wandb/
 log/
 *.log
+*.yaml
+*.pt
+zero_to_fp32.py
+latest
 outputs/
 data/
 jobs/
