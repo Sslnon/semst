@@ -1,5 +1,5 @@
 {
-    "train_micro_batch_size_per_gpu": 3,
+    "train_micro_batch_size_per_gpu": 2,
     "gradient_accumulation_steps": 4,
     "optimizer": {
         "type": "Adam",
@@ -18,18 +18,14 @@
         "min_loss_scale": 0.01
     },
     "zero_optimization": {
-        "stage": 2,
-        "allgather_partitions": true,
-        "overlap_comm": true,
-        "reduce_scatter": true,
-        "contiguous_gradients": true
+        "stage": 1
     },
     "scheduler": {
         "type": "WarmupLR",
         "params": {
             "warmup_min_lr": 0.00,
             "warmup_max_lr": 0.00001,
-            "warmup_num_steps": 5000
+            "warmup_num_steps": 2000
         }
     },
     "checkpoint_activations": false

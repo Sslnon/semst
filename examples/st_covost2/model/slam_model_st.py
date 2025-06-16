@@ -45,8 +45,8 @@ def model_factory(train_config, model_config, **kwargs):
     if ckpt_path is not None:
             logger.info("loading other parts from: {}".format(ckpt_path))
             ckpt_dict = torch.load(ckpt_path, map_location="cpu")
-            model.load_state_dict(ckpt_dict, strict=False)
-
+            module_dict=ckpt_dict['module']
+            model.load_state_dict(module_dict, strict=False)
     print_model_size(model, train_config, int(os.environ["RANK"]) if train_config.enable_fsdp or train_config.enable_ddp else 0)
     return model, tokenizer
 
