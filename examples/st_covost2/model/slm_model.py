@@ -36,18 +36,28 @@ class EncoderProjectorQFormer(nn.Module):
         return query_proj
 
 class CustomSLM(PreTrainedModel):
-    def __init__(self, config, ckpt_path=None):
+    def __init__(self, config, model_config, ckpt_path=None):
         super().__init__(config)
         # 例如：
-        self.encoder = WhisperModel.from_pretrained("openai/whisper-large-v3").encoder
-        self.llm = AutoModelForCausalLM.from_pretrained("Qwen/Qwen2-7B")
+        self.encoder = WhisperModel.from_pretrained(model_config.encoder_path_hf,local_files_only=True).encoder
+        self.llm = AutoModelForCausalLM.from_pretrained(model_config.llm_path,local_files_only=True)
         self.encoder_projector = EncoderProjectorQFormer()
-        self.tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen2-7B")
+        self.tokenizer = AutoTokenizer.from_pretrained(model_config.llm_path,local_files_only=True)
 
+        # if ckpt_path is not None:
+        #     print("loading model checkpoint from: {}".format(ckpt_path))
+        #     ckpt_dict = torch.load(ckpt_path, map_location="cpu",weights_only=False)
+        #     state_dict = ckpt_dict['module']
+        #     self.load_state_dict(state_dict, strict=False)  # 
         if ckpt_path is not None:
             print("loading model checkpoint from: {}".format(ckpt_path))
-            ckpt_dict = torch.load(ckpt_path, map_location="cpu")
+            ckpt_dict = torch.load(ckpt_path, map_location="cpu",weights_only=False)
             self.load_state_dict(ckpt_dict, strict=False)  # 
+        # if ckpt_path is not None and ckpt_type:
+        #     print("loading model checkpoint from: {}".format(ckpt_path))
+        #     ckpt_dict = torch.load(ckpt_path, map_location="cpu",weights_only=False)
+        #     state_dict = ckpt_dict['module']
+        #     self.load_state_dict(state_dict, strict=False)  # 
 
 
     def forward(self,
