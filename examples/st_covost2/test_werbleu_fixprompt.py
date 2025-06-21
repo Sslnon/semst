@@ -27,7 +27,7 @@ def main():
 
             text_lan = gt.split("|>")[0].split("<|")[-1]
             
-            text_lan = "<|"+text_lan+"|>"
+            text_lan = "<|"+"st"+"|>"
 
             response_parts = response.split(text_lan)
 
@@ -35,7 +35,9 @@ def main():
                 gt_parts = gt.split(text_lan)
                 gt_language1 = gt_parts[0].strip()
                 gt_language2 = gt_parts[1].strip()
-
+                # print(gt_language1)
+                # print(gt_language2)
+                
 
                 if len(response_parts)==2 and len(gt_parts) == 2:
                     # 获取英文和中文部分
@@ -44,13 +46,16 @@ def main():
 
                     response_asr.append(response_language1)
                     response_st.append(response_language2)
+                    # print(response_language1)
+                    # print(response_language2)
+                    # print("OK")
                 else:
                     response_asr.append(response)
                     response_st.append(response)
                     print(response)
                     print(gt)
                     # continue
-
+                # assert False
                 if len(gt_parts) == 2:
                     # 获取英文和中文部分
                     
@@ -69,7 +74,7 @@ def main():
     normalizer = BasicTextNormalizer()
 
 
-    wer_ortho = 100 * wer.compute(predictions=response_asr, references=gt_asr)
+    # wer_ortho = 100 * wer.compute(predictions=response_asr, references=gt_asr)
 
     pred_str_norm = [normalizer(pred) for pred in response_asr]
     label_str_norm = [normalizer(label) for label in gt_asr]
@@ -79,7 +84,7 @@ def main():
 
 
     wer = 100 * wer.compute(predictions=pred_str_norm, references=label_str_norm)
-    wer_result = {"wer_ortho": wer_ortho, "wer": wer}
+    wer_result = {"wer": wer}
     print(wer_result)
 
 
@@ -89,14 +94,14 @@ def main():
         exit()
 
     print(text_lan)
-    if text_lan == "<|ja|>" or text_lan== "<|jpn_Jpan|>":
-            text_lan = "ja-mecab"
-    elif text_lan == "<|zh|>":
-        text_lan = "zh"
-    else:
-        text_lan = "13a"
+    # if text_lan == "<|ja|>" or text_lan== "<|jpn_Jpan|>":
+    #         text_lan = "ja-mecab"
+    # elif text_lan == "<|zh|>":
+    #     text_lan = "zh"
+    # else:
+    #     text_lan = "13a"
+    text_lan = "zh"
     print(text_lan)
-
     import sacrebleu
     
 
