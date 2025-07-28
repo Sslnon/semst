@@ -8,15 +8,146 @@ import torch.distributed as dist
 from typing import List, Optional, Tuple, Union
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoModel, AutoModelForSeq2SeqLM, T5ForConditionalGeneration
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+import ot
+import numpy as np
+import random
 
 from slam_llm.utils.config_utils import generate_peft_config
 from slam_llm.utils.train_utils import print_module_size, print_model_size
 from peft import PeftModel, PeftConfig
 from torch.nn import CrossEntropyLoss
 from slam_llm.utils.metric import compute_accuracy
-
+from geomloss import SamplesLoss
 import logging
 logger = logging.getLogger(__name__)
+
+import torch.nn as nn
+
+# LANG2ID = {
+#     "fleurs_en_us": 0,
+#     "fleurs_ja_jp": 1,
+#     "fleurs_es_419": 2,
+#     "fleurs_ko_kr": 3,
+#     "fleurs_ru_ru": 4
+# }
+# LANG2ID = {
+#     "fleurs_en_us": 0,
+#     "fleurs_ja_jp": 1,
+#     "fleurs_fr_fr": 2,
+#     "fleurs_ko_kr": 3,
+#     "fleurs_de_de": 4
+# }
+LANG2ID = {
+    "fleurs_en_us": 0,
+    "fleurs_ja_jp": 1,
+    "fleurs_yue_hant_hk": 2,
+    "fleurs_ko_kr": 3,
+    "fleurs_it_it": 4
+}
+
+# class DynamicBias(nn.Module):
+#     def __init__(self, centroids: torch.Tensor, hidden_size=1280, gate_dim='scalar'):
+#         super().__init__()
+#         self.bias_table = nn.Parameter(centroids.clone())         # [L, D]
+#         self.ln   = nn.LayerNorm(hidden_size)
+#         self.mlp  = nn.Sequential(
+#             nn.Linear(hidden_size, 256),
+#             nn.ReLU(),
+#             nn.Linear(256, 1 if gate_dim=='scalar' else hidden_size),
+#             nn.Sigmoid()           # 输出 α∈(0,1)
+#         )
+#         self.gate_dim = gate_dim
+
+#     def forward(self, h: torch.Tensor, lang_id: torch.LongTensor):
+
+#             sent = h.mean(1)                    # [B, D]
+#             alpha = self.mlp(self.ln(sent))     # [B, 1] or [B, D]
+
+#             b = self.bias_table[lang_id]        # [B, D]
+
+#             delta = alpha * b
+#             h = h + delta.unsqueeze(1)          
+#             return h, alpha.detach()                 
+
+sinkhorn = SamplesLoss(loss="sinkhorn",p=2,blur=0.05)
+def sinkhorn_wasserstein_loss(x_seq, y_seq):
+    return sinkhorn(x_seq, y_seq)
+
+class LayerSampler:
+    def __init__(
+        self,
+        candidates: Optional[List[int]] = None,
+        strategy: str = "uniform",
+        weights: Optional[List[float]] = None,
+        device: torch.device = torch.device("cpu"),
+        alpha: float = 0.9,                 # EMA
+        beta:  float = 1,                 # UCB
+    ):
+        self.device = device
+        self.candidates = candidates
+        self.strategy = strategy
+        self.weights  = torch.tensor(
+            weights if weights is not None else [1.0] * len(self.candidates),
+            dtype=torch.float,
+            device=device,
+        )
+        # UCB
+        
+        self.alpha  = alpha
+        self.beta   = beta
+        self.Q      = torch.zeros(len(candidates), device=device)   # EMA Δ-Cost 奖励
+        self.count  = torch.zeros(len(candidates), device=device)   # 被选次数
+        self.prev_cost = [None] * len(candidates)                   # 上次 cost
+        self.total_t   = 0                            # 总选择次数
+
+    def sample(self) -> int:
+        if self.strategy == "uniform":
+            idx = random.choice(self.candidates)
+        elif self.strategy == "weighted":
+            probs = self.weights / self.weights.sum()
+            # idx = torch.multinomial(probs, 1).item() + 1
+
+            rel   = torch.multinomial(probs, 1).item()
+            idx   = self.candidates[rel] + 1
+
+        elif self.strategy == "ucb_bandit":
+            # UCB: score = Q - β * sqrt(log t / n)
+
+            self.total_t += 1
+            # if self.total_t <= 3500:
+            #     idx = random.choice(self.candidates) + 1
+            # else:
+            expl = self.beta * torch.sqrt(
+                torch.log(torch.tensor(self.total_t, device=self.device)) /
+                (self.count + 1e-6)
+            )
+            ucb_scores = self.Q - expl
+            # rel = torch.argmax(ucb_scores).item()
+            # idx = self.candidates[rel]
+            temp = max(0.05, 1.0 * (0.999 ** self.total_t)) 
+            probs = torch.softmax(-ucb_scores / temp, dim=0)
+
+            rel = torch.multinomial(probs, num_samples=1).item()
+            idx = self.candidates[rel]
+        else:
+            raise ValueError(f"Unknown strategy: {self.strategy}")
+        return idx
+
+    def update_weights(self, new_scores: List[float], tau: float = 1.0):
+
+        scores = torch.tensor(new_scores, dtype=torch.float, device=self.device)
+        self.weights = torch.softmax(scores / tau, dim=-1)
+
+    def update_ucb(self, layer_idx: int, cost_now: float):
+        rel = self.candidates.index(layer_idx)
+
+        if self.prev_cost[rel] is not None:
+            delta = self.prev_cost[rel] - cost_now
+            self.Q[rel] = self.alpha * self.Q[rel] + (1 - self.alpha) * delta
+
+        self.prev_cost[rel] = cost_now
+        self.count[rel]    += 1
+        
 
 def model_factory(train_config, model_config, **kwargs):
     # return necessary components for training
@@ -217,7 +348,7 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
         from slam_llm.models.projector import EncoderProjectorCov1d
         encoder_projector = EncoderProjectorCov1d(model_config)
     elif model_config.encoder_projector == "q-former":
-        from slam_llm.models.projector import EncoderProjectorQFormer
+        from slam_llm.models.projector_cl import EncoderProjectorQFormer
         encoder_projector = EncoderProjectorQFormer(model_config)
     else:
         return None
@@ -237,17 +368,31 @@ class slam_model(nn.Module):
         **kwargs
     ):
         super().__init__()
+
+
+        sampler = LayerSampler(
+            candidates=[1,2,3],  # e.g. [0,1,2,3,4]
+            strategy="ucb_bandit"
+        )
+        self.ot_sampler = sampler
+        # self.ema_loss = [None] * len([1,2,3])
+
         # modality encoder 
         self.encoder = encoder
+
+        centroids = torch.tensor(np.load("/work/2024/lixuanchen/project/SLAM-LLM/examples/st_covost2/scripts/bias_enjpyuekoit_largev3.npy"), dtype=torch.float32)
+        self.bias_table = nn.Parameter(centroids.clone(), requires_grad=True)
+        # self.scale_table = nn.Parameter(torch.ones_like(self.bias_table))
+        # self.db = DynamicBias(centroids)
 
         # llm
         self.llm = llm
         self.llm.gradient_checkpointing_enable()
         self.encoder.gradient_checkpointing_enable()
-
+        
         # projector
         self.encoder_projector = encoder_projector
-
+      
         # tokenizer
         self.tokenizer = tokenizer
         self.metric = kwargs.get("metric", "acc")
@@ -285,6 +430,7 @@ class slam_model(nn.Module):
                 **kwargs,
                 ):
         audio_mel = kwargs.get("audio_mel", None)
+
         audio_mel_mask = kwargs.get("audio_mel_mask", None)
         audio_mel_post_mask = kwargs.get("audio_mel_post_mask", None) # 2x downsample for whisper
 
@@ -297,7 +443,10 @@ class slam_model(nn.Module):
         # for text encoder
         instruct_ids = kwargs.get("instruct_ids", None)
         instruct_mask = kwargs.get("instruct_mask", None)
-
+        sources = kwargs.get("sources", None)
+        # print(sources)
+        # if not self.training: 
+        #     assert False
         
         encoder_outs = None
         if audio_mel is not None or audio is not None or visual is not None:
@@ -305,6 +454,14 @@ class slam_model(nn.Module):
                 self.encoder.eval()
             if self.model_config.encoder_path_hf is not None:
                 encoder_outs = self.encoder(audio_mel.permute(0, 2, 1)).last_hidden_state # bs*seq*dim
+                lang_id = torch.tensor([LANG2ID[s] for s in sources],
+                                    dtype=torch.long)
+
+                b = self.bias_table[lang_id]                # [B, 1280]
+
+                encoder_outs = encoder_outs + b.unsqueeze(1)
+
+                # encoder_out, _ = self.db(encoder_outs, lang_id)
             elif self.model_config.encoder_name == "whisper":
                 encoder_outs = self.encoder.extract_variable_length_features(audio_mel.permute(0, 2, 1)) # bs*seq*dim
             if self.model_config.encoder_name == "beats":
@@ -331,8 +488,17 @@ class slam_model(nn.Module):
                 encoder_outs = self.encoder.extract_features(audio, padding_mask = None) # MusicFM doesn't support padding mask 
             if self.encoder is None:
                 encoder_outs = audio_mel if audio_mel is not None else audio
-
-            if self.model_config.encoder_projector == "q-former":
+            if self.training and self.model_config.encoder_projector == "q-former":
+                ot_layer = torch.randint(
+                    low=1,
+                    high=4,
+                    size=(1,),
+                    device=encoder_outs.device,
+                ).item()
+                ot_layer = self.ot_sampler.sample()
+                # ot_layer = 1
+                encoder_outs, shallow_query = self.encoder_projector(encoder_outs, audio_mel_post_mask, ot_layer)
+            if not self.training and self.model_config.encoder_projector == "q-former":
                 encoder_outs = self.encoder_projector(encoder_outs, audio_mel_post_mask)
             if self.model_config.encoder_projector == "linear":
                 encoder_outs = self.encoder_projector(encoder_outs)
@@ -347,7 +513,22 @@ class slam_model(nn.Module):
                 encoder_outs = self.encoder_projector(encoder_outs, instruct_mask)
             if self.model_config.encoder_projector == "linear":
                 encoder_outs = self.encoder_projector(encoder_outs)
-        
+
+
+        loss_w = None
+        if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+            loss_w = torch.tensor(0.0, device=encoder_outs.device)
+            B = shallow_query.size(0)
+
+            for i in range(0, B, 2):
+                en_query = shallow_query[i]     # [Q, D]
+                x_query  = shallow_query[i+1]   # [Q, D]
+                en_query = F.normalize(en_query, dim=-1)
+                x_query = F.normalize(x_query, dim=-1)
+
+                loss_w += 0.5 * sinkhorn_wasserstein_loss(x_query, en_query)
+            
+
         input_ids = input_ids[:, 80:]
 
 
@@ -376,8 +557,12 @@ class slam_model(nn.Module):
                 preds = torch.argmax(input=model_outputs.logits, dim=-1)
                 acc = compute_accuracy(preds.detach()[:, :-1], labels.detach()[:, 1:], ignore_label=-100)
 
-                
-        return model_outputs, acc
+        # if loss_w is not None and loss_span is not None:
+        #     return model_outputs, acc, loss_w, loss_span
+        if loss_w is not None:
+            return model_outputs, acc, loss_w, ot_layer
+        else: 
+            return model_outputs, acc
     
     @torch.no_grad()
     def generate(self,

@@ -15,16 +15,22 @@ log/
 zero_to_fp32.py
 latest
 outputs/
+outputs2/
 data/
 jobs/
 debug/
 audio/
+conf/
 examples/st_covost2/manifest/
+examples/st_covost2/manifest2/
 examples/st_covost2/utils/
 examples/st_covost2/scripts/st_pretrain_ds.sh
 examples/st_covost2/scripts/asr_pretrain_ds.sh
 infer_enzh.sh
 examples/st_covost2/inference/
+examples/st_covost2/infer/
+*.npy
+*.png
 
 examples/s2s/scripts/debug
 examples/vsr_LRS3/scripts/decode_avhubert_vo_vicuna_7b_noself.sh

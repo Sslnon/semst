@@ -16,7 +16,7 @@ from transformers.data import DataCollatorForSeq2Seq
 
 # from llama_recipes.configs import datasets, lora_config, llama_adapter_config, prefix_config, train_config
 from slam_llm.data.sampler import LengthBasedBatchSampler, DistributedLengthBasedBatchSampler
-
+from slam_llm.data.positive_pair_sampler import CrossLangPairSampler
 from omegaconf import OmegaConf
 
 import logging
@@ -91,6 +91,15 @@ def get_dataloader_kwargs(train_config, dataset, tokenizer, mode):
             kwargs["batch_size"] = batch_size
             kwargs["drop_last"] = True
             kwargs["collate_fn"] = default_data_collator
+        elif train_config.batching_strategy == "pair":
+            kwargs["batch_sampler"] = CrossLangPairSampler(
+                dataset,
+                batch_size = batch_size,        # 2k
+                shuffle    = (mode == "train"),
+                drop_last  = True,
+            )
+            kwargs["collate_fn"] = dataset.collator_pair
+            logger.info(f"Using batching strategy: {train_config.batching_strategy}")
         elif train_config.batching_strategy == "dynamic":
             kwargs["sampler"] = None
             kwargs["batch_size"] = None

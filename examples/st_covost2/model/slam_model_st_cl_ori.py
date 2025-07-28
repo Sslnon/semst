@@ -8,15 +8,93 @@ import torch.distributed as dist
 from typing import List, Optional, Tuple, Union
 from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig, AutoModel, AutoModelForSeq2SeqLM, T5ForConditionalGeneration
 from peft import LoraConfig, TaskType, get_peft_model, prepare_model_for_kbit_training
+import ot
+import numpy as np
 
 from slam_llm.utils.config_utils import generate_peft_config
 from slam_llm.utils.train_utils import print_module_size, print_model_size
 from peft import PeftModel, PeftConfig
 from torch.nn import CrossEntropyLoss
 from slam_llm.utils.metric import compute_accuracy
-
+from geomloss import SamplesLoss
 import logging
 logger = logging.getLogger(__name__)
+
+import torch.nn as nn
+# sinkhorn = SamplesLoss("sinkhorn", p=2, blur=0.05)
+def span_pooling(x: torch.Tensor, w: int = 3, stride: int = 3, mode: str = "mean"):
+    T, D = x.shape
+    spans = []
+    for i in range(0, T - w + 1, stride):
+        chunk = x[i:i+w]
+        if mode == "mean":
+            pooled = chunk.mean(dim=0)
+        elif mode == "max":
+            pooled = chunk.max(dim=0).values
+        spans.append(pooled)
+    if len(spans) == 0:
+        return x.mean(dim=0, keepdim=True)  # fallback if too short
+    return torch.stack(spans, dim=0)
+# projector.py
+import torch, torch.nn as nn
+
+class LSARProjector(nn.Module):
+    def __init__(self, P_global: torch.Tensor, freeze=True):
+        super().__init__()
+        self.P = nn.Parameter(P_global, requires_grad=not freeze)
+
+    def forward(self, h: torch.Tensor) -> torch.Tensor:
+        proj = torch.matmul(h, self.P)          # [B,Q,k]
+        return h - torch.matmul(proj, self.P.t())
+
+sinkhorn = SamplesLoss(loss="sinkhorn",p=2,blur=0.05)
+def sinkhorn_wasserstein_loss(x_seq, y_seq):
+    return sinkhorn(x_seq, y_seq)
+# def compute_ot_plan_pot(x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+#     """
+#     x, y: [Q, D] float32
+#     Returns Z_ot: [Q, Q] torch.Tensor
+#     """
+#     x_np = x.detach().float().cpu().numpy()
+#     y_np = y.detach().float().cpu().numpy()
+#     Q = x_np.shape[0]
+#     a = b = np.ones(Q) / Q
+#     C = ot.dist(x_np, y_np, metric="euclidean") ** 2  # [Q, Q]
+#     Z = ot.emd(a, b, C)
+#     return torch.from_numpy(Z).to(x.device).float()
+# def _sync_bn(num_feat: int, affine: bool = True):
+
+#     return nn.SyncBatchNorm(num_feat, affine=affine)
+
+# class AlignmentHead(nn.Module):
+#     def __init__(self, dim: int):
+#         super().__init__()
+#         self.q_proj = nn.Linear(dim, dim, bias=False)
+#         self.k_proj = nn.Linear(dim, dim, bias=False)
+#         self.scale  = dim ** 1
+
+#     def forward(self, src_tok: torch.Tensor, tgt_tok: torch.Tensor):  # [B, Q, D]
+        
+#         q = self.q_proj(src_tok)
+#         k = self.k_proj(tgt_tok)
+
+#         sim = torch.matmul(q, k.transpose(-1, -2)) * self.scale
+#         z_hat = sim.softmax(dim=-1)
+
+#         # print("sim range:", sim.min().item(), sim.max().item())
+#         # print("sim std:", sim.std().item())
+#         # print("z_hat entropy:", (-z_hat * z_hat.log()).sum(dim=-1).mean().item())  # 越大说明越“平”
+
+#         return z_hat
+
+# def gumbel_sinkhorn_sample(C: torch.Tensor, temperature: float = 0.1, n_iters: int = 20):
+#     noise = -torch.empty_like(C).exponential_().log()  # Gumbel(0,1)
+#     logits = -C + noise
+#     Z = logits / temperature
+#     for _ in range(n_iters):
+#         Z = Z - torch.logsumexp(Z, dim=1, keepdim=True)
+#         Z = Z - torch.logsumexp(Z, dim=0, keepdim=True)
+#     return Z.exp()
 
 def model_factory(train_config, model_config, **kwargs):
     # return necessary components for training
@@ -217,7 +295,7 @@ def setup_encoder_projector(train_config, model_config, **kwargs):
         from slam_llm.models.projector import EncoderProjectorCov1d
         encoder_projector = EncoderProjectorCov1d(model_config)
     elif model_config.encoder_projector == "q-former":
-        from slam_llm.models.projector import EncoderProjectorQFormer
+        from slam_llm.models.projector_cl import EncoderProjectorQFormer
         encoder_projector = EncoderProjectorQFormer(model_config)
     else:
         return None
@@ -245,9 +323,35 @@ class slam_model(nn.Module):
         self.llm.gradient_checkpointing_enable()
         self.encoder.gradient_checkpointing_enable()
 
+        P_global = torch.from_numpy(np.load("/work/2024/lixuanchen/project/SLAM-LLM/examples/st_covost2/scripts/Whisper_P_global_k4.npy"))
+        self.projector = LSARProjector(P_global, freeze=True)   # ← 新增
+        self.apply_lsar_at_infer = True  # 推理时是否启用
+
         # projector
         self.encoder_projector = encoder_projector
+        # 
+        # self.align_head = AlignmentHead(768)
 
+        # dim = 768
+        # self.q_proj = nn.Linear(dim, dim, bias=False)
+        # self.k_proj = nn.Linear(dim, dim, bias=False)
+        # self.scale  = dim ** -0.5
+        # proj_dim = 256
+        # self.sim_projector = nn.Sequential(
+        #     nn.Linear(model_config.llm_dim, model_config.llm_dim, bias=False),
+        #     _sync_bn(model_config.llm_dim),            # ← SyncBN
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(model_config.llm_dim, proj_dim, bias=False),
+        # )
+
+        # self.sim_predictor = nn.Sequential(
+        #     nn.Linear(proj_dim, 256, bias=False),
+        #     _sync_bn(256),                        # ← SyncBN
+        #     nn.ReLU(inplace=True),
+        #     nn.Linear(256, proj_dim)              # 原版输出无 BN/ReLU，如要 BN 可再加
+        # )
+
+        # nn.LayerNorm(proj_dim),
         # tokenizer
         self.tokenizer = tokenizer
         self.metric = kwargs.get("metric", "acc")
@@ -285,6 +389,7 @@ class slam_model(nn.Module):
                 **kwargs,
                 ):
         audio_mel = kwargs.get("audio_mel", None)
+
         audio_mel_mask = kwargs.get("audio_mel_mask", None)
         audio_mel_post_mask = kwargs.get("audio_mel_post_mask", None) # 2x downsample for whisper
 
@@ -332,7 +437,12 @@ class slam_model(nn.Module):
             if self.encoder is None:
                 encoder_outs = audio_mel if audio_mel is not None else audio
 
-            if self.model_config.encoder_projector == "q-former":
+            if self.training or self.apply_lsar_at_infer:
+                encoder_outs = self.projector(encoder_outs)
+
+            if self.training and self.model_config.encoder_projector == "q-former":
+                encoder_outs, shallow_query = self.encoder_projector(encoder_outs, audio_mel_post_mask,1)
+            if not self.training and self.model_config.encoder_projector == "q-former":
                 encoder_outs = self.encoder_projector(encoder_outs, audio_mel_post_mask)
             if self.model_config.encoder_projector == "linear":
                 encoder_outs = self.encoder_projector(encoder_outs)
@@ -347,7 +457,241 @@ class slam_model(nn.Module):
                 encoder_outs = self.encoder_projector(encoder_outs, instruct_mask)
             if self.model_config.encoder_projector == "linear":
                 encoder_outs = self.encoder_projector(encoder_outs)
+
         
+        # loss_w = None
+        # loss_align = None
+        
+        # if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+        #     loss_w = torch.tensor(0.0, device=encoder_outs.device)
+        #     loss_align = torch.tensor(0.0, device=encoder_outs.device)
+
+        #     # for name, param in self.align_head.named_parameters():
+        #     #     print(f"Param: {name}, requires_grad={param.requires_grad}")
+        #     # if self.align_head.q_proj.weight.grad is not None:
+        #     #     grad_mean = self.align_head.q_proj.weight.grad.abs().mean().item()
+        #     #     print(f"q_proj weight grad mean: {grad_mean:.6f}")
+        #     # else:
+        #     #     print("q_proj.weight grad is None!")
+        #     # print("shallow_query requires_grad:", shallow_query.requires_grad)
+
+        #     for i in range(0, shallow_query.size(0), 2):
+        #         en_query = shallow_query[i]
+        #         ja_query = shallow_query[i+1]
+        #         en_query = F.normalize(en_query, dim=-1)  # [Q, D]
+        #         ja_query = F.normalize(ja_query, dim=-1)  # [Q, D]
+
+        #         loss_w += sinkhorn_wasserstein_loss(ja_query, en_query)
+        #         z_hat = self.align_head(ja_query.unsqueeze(0), en_query.unsqueeze(0))  # [1, Q, Q]
+        #         # print("align_out requires_grad:", z_hat.requires_grad)
+
+        #         # with torch.no_grad():
+        #         cost = torch.cdist(ja_query, en_query, p=2) ** 2
+        #         plan = gumbel_sinkhorn_sample(cost, temperature=0.2)
+        #         plan = plan / plan.sum(dim=-1, keepdim=True)      
+
+        #         loss_align += F.kl_div(z_hat.squeeze(0).log(), plan, reduction="batchmean")
+
+        #         # print("loss_align:", loss_align.item())
+        #         # print("z_hat mean:", z_hat.mean().item())
+        #         # print("plan mean:", plan.mean().item())
+        #         # print("kl diff:", (z_hat.squeeze(0).log() - plan.log()).abs().mean().item())
+        #         # print("plan min:", plan.min().item(), "max:", plan.max().item())
+        #         # assert False
+        #     # z_hat.retain_grad()  
+        #     # print("z_hat grad mean =", z_hat.grad.abs().mean().item())
+
+        #     loss_w = loss_w / (shallow_query.size(0) // 2)
+        #     loss_align = loss_align / (shallow_query.size(0) // 2)
+
+            # print(loss_w)
+            # print(loss_align)
+
+
+        loss_w = None
+        loss_span = None
+        if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+            loss_w = torch.tensor(0.0, device=encoder_outs.device)
+            loss_span = torch.tensor(0.0, device=encoder_outs.device)
+            # loss_w2 = torch.tensor(0.0, device=encoder_outs.device)
+            for i in range(0, shallow_query.size(0), 2):
+                en_query = shallow_query[i]     # [Q, D]
+                x_query  = shallow_query[i+1]   # [Q, D]
+                en_query = F.normalize(en_query, dim=-1)
+                x_query = F.normalize(x_query, dim=-1)
+
+                loss_w += 0.5 * sinkhorn_wasserstein_loss(x_query, en_query)
+
+                span_en = span_pooling(en_query, w=4, stride=2, mode="mean")  # [M, D]
+                span_x  = span_pooling(x_query,  w=4, stride=2, mode="mean")  # [M, D]
+                span_en = F.normalize(span_en, dim=-1)
+                span_x  = F.normalize(span_x, dim=-1)
+
+                loss_span += 0.5 * sinkhorn_wasserstein_loss(span_x, span_en)
+
+            # loss_w = loss_w / (shallow_query.size(0) // 2)  # 平均化
+            # loss_span = loss_span / (shallow_query.size(0) // 2)
+
+        # print(loss_span)
+        # assert False
+
+        # loss_align = None
+        # if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+        #     B_pairs = shallow_query.size(0) // 2
+        #     kl_sum  = 0.0
+        #     for i in range(0, shallow_query.size(0), 2):
+
+        #         en_tok = F.normalize(shallow_query[i],   dim=-1).unsqueeze(0)  # [1,Q,D]
+        #         ja_tok = F.normalize(shallow_query[i+1], dim=-1).unsqueeze(0)  # [1,Q,D]
+
+        #         z_hat = self.align_head(ja_tok, en_tok)         
+
+        #         with torch.no_grad():
+        #             C = torch.cdist(ja_tok[0], en_tok[0], p=2)   # [Q,Q]
+        #             C = C.to(dtype=torch.float32)               
+        #             Z_ot = torch.from_numpy(
+        #                 ot.emd2([], [], C.cpu().numpy(), log=True)[1]['G']
+        #             ).to(C.device)                      # [Q,Q]
+        #             Z_ot = Z_ot / Z_ot.sum(dim=-1, keepdim=True)
+
+        #         kl_sum += F.kl_div(z_hat.log(), Z_ot, reduction="batchmean")
+
+        #     loss_align = kl_sum / B_pairs
+
+      
+
+            # for i in range(0, encoder_outs.size(0), 2):
+            #     en_query2 = encoder_outs[i]     # [Q, D]
+            #     x_query2  = encoder_outs[i+1]   # [Q, D]
+            #     en_query2 = F.normalize(en_query2, dim=-1)
+            #     x_query2 = F.normalize(x_query2, dim=-1)
+
+            #     loss_w2 +=   * sinkhorn_wasserstein_loss(x_query2, en_query2)
+
+            # loss_w = loss_w / (shallow_query.size(0) // 2)  # 平均化
+            # loss_w2 = loss_w2 / (encoder_outs.size(0) // 2)
+
+            # for i in range(0, shallow_query2.size(0), 2):
+            #     en_query2 = shallow_query2[i]     # [Q, D]
+            #     x_query2  = shallow_query2[i+1]   # [Q, D]
+            #     en_query2 = F.normalize(en_query2, dim=-1)
+            #     x_query2 = F.normalize(x_query2, dim=-1)
+
+            #     loss_w2 += 0.5 * sinkhorn_wasserstein_loss(x_query2, en_query2)
+
+            # loss_w = loss_w / (shallow_query.size(0) // 2)  # 平均化
+            # loss_w2 = loss_w2 / (shallow_query2.size(0) // 2)
+            # print(loss_ss)
+            # assert False
+        # loss_ss = None
+        # if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+        #     loss_ss = torch.tensor(0.0, device=encoder_outs.device)
+
+        #     sent_vec = encoder_outs.mean(dim=1)
+
+        #     en_vec = sent_vec[0::2]                    # [B, D]
+        #     x_vec = sent_vec[1::2]
+
+        #     loss_ss = F.mse_loss(x_vec, en_vec.detach())
+        # loss_ss = None
+        # if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+
+        #     # 假设 batch: en, fr, en, fr, ...
+        #     en_tok = encoder_outs[0::2]          # [B/2, T, D]
+        #     x_tok = encoder_outs[1::2]          # 法语或日语
+
+        #     # 单位化
+        #     en_norm = F.normalize(en_tok, dim=-1)
+        #     x_norm = F.normalize(x_tok, dim=-1)
+
+        #     # 逐 token 余弦相似度
+        #     cos_sim = (x_norm * en_norm.detach()).sum(dim=-1)   # [B/2, T]
+
+        #     # 损失 = 1 - cosine
+        #     tok_loss = 1.0 - cos_sim        # 越小越好
+
+        #     loss_ss = tok_loss.mean()
+            # print(loss_ss)
+            # assert False
+
+
+            # z      = self.sim_projector(sent_vec)            # [B, d]
+            # z1, z2 = z[0::2], z[1::2]
+            # p1, p2 = self.sim_predictor(z1), self.sim_predictor(z2)
+            # def pos_euclid_loss(p, z):
+            #     # 直接用 L2 距离；也可改成平方距离
+            #     return F.pairwise_distance(p, z.detach(), p=2).mean()
+
+            # loss_ss = pos_euclid_loss(p2, z1.detach())
+
+            # print(loss_ss)
+        
+        # tau = 0.07          # 温度，可自行调
+
+        # loss_ss = None
+        # if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+        #     # 1) 直接对 QFormer 输出做 mean-pool 得句向量
+        #     sent_vec = encoder_outs.mean(dim=1)                 # [B, hidden_dim]
+
+        #     # 2) 归一化后作为特征 z
+        #     z = F.normalize(sent_vec, dim=-1)                   # [B, hidden_dim]
+
+        #     z1, z2 = z[0::2], z[1::2]                           # [B/2, hidden_dim] ×2
+        #     B = z1.size(0)
+
+        #     feats = torch.cat([z1, z2], dim=0)                  # [2B, hidden_dim]
+        #     sim   = torch.mm(feats, feats.t()) / tau            # 余弦相似 / τ
+
+        #     diag_mask = torch.eye(2 * B, device=sim.device, dtype=torch.bool)
+        #     sim.masked_fill_(diag_mask, -1e9)
+
+        #     positives = torch.cat([
+        #         torch.arange(B, 2 * B, device=sim.device),
+        #         torch.arange(0, B, device=sim.device)
+        #     ])
+
+        #     loss_ss = F.cross_entropy(sim, positives)
+        # tau = 0.07
+        # loss_ss = None
+        # if self.training and ("view1" in kwargs) and ("view2" in kwargs):
+        # # encoder_outs:[2B,hidden_dim]
+        #     sent_vec = encoder_outs.mean(dim=1)       # [2B, D]
+        #     # 不做归一化，直接用原始向量
+        #     z = sent_vec                              # [2B, D]
+
+        #     # 偶数位置是 English，奇数位置是 Japanese
+        #     z1 = z[0::2]   # [B, D]
+        #     z2 = z[1::2]   # [B, D]
+        #     B  = z1.size(0)
+
+        #     d_pos = F.pairwise_distance(z1, z2, p=2)   # [B]
+
+        #     # 负例示例：把 z2 整体向下滚动一位（每个 z1_i 对应 z2_{(i+1)%B}）
+        #     z2_neg = torch.roll(z2, shifts=1, dims=0)  # [B, D]
+        #     d_neg = F.pairwise_distance(z1, z2_neg, p=2)  # [B]
+
+        #     # margin 超参
+        #     margin = 1.0
+        #     # 两元对比损失：正例越近越好，负例距离大于 margin
+        #     loss_pos = 0.5 * (d_pos**2).mean()
+        #     loss_neg = 0.5 * F.relu(margin - d_neg).pow(2).mean()
+        #     loss_ss = loss_pos + loss_neg
+
+        #     print(loss_ss)
+            
+        #     assert False
+
+        # if torch.isnan(loss_ss) or torch.isinf(loss_ss):
+        #     raise ValueError("loss_ss 为 NaN/Inf，检查 sim 或 positives 构造是否正确")
+
+        # with torch.no_grad():
+        #     B_pairs = z1.size(0)                           
+        #     pos_sim = F.cosine_similarity(z1, z2, dim=-1).mean()
+        #     neg_sim = F.cosine_similarity(z1, z1.roll(1, 0), dim=-1).mean()
+        #     print(f"[Sanity] loss={loss_ss.item():.4f}  pos_sim={pos_sim.item():.3f}  "
+        #         f"neg_sim={neg_sim.item():.3f}")
+        # assert False
+
         input_ids = input_ids[:, 80:]
 
 
@@ -376,8 +720,10 @@ class slam_model(nn.Module):
                 preds = torch.argmax(input=model_outputs.logits, dim=-1)
                 acc = compute_accuracy(preds.detach()[:, :-1], labels.detach()[:, 1:], ignore_label=-100)
 
-                
-        return model_outputs, acc
+        if loss_w is not None and loss_span is not None:
+            return model_outputs, acc, loss_w, loss_span
+        else: 
+            return model_outputs, acc
     
     @torch.no_grad()
     def generate(self,
