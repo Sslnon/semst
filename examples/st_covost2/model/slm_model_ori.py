@@ -4,16 +4,7 @@ from transformers import WhisperModel,AutoModelForCausalLM, AutoTokenizer
 import torch.nn as nn
 from typing import List, Optional
 from slam_llm.utils.metric import compute_accuracy
-import numpy as np
 
-
-LANG2ID = {
-    "fleurs_en_us": 0,
-    "fleurs_ja_jp": 1,
-    "fleurs_es_419": 2,
-    "fleurs_ko_kr": 3,
-    "fleurs_ru_ru": 4
-}
 
 class EncoderProjectorQFormer(nn.Module):
     def __init__(self):
@@ -52,10 +43,6 @@ class CustomSLM(PreTrainedModel):
         self.llm = AutoModelForCausalLM.from_pretrained(model_config.llm_path,local_files_only=True)
         self.llm.gradient_checkpointing_enable()
         self.encoder.gradient_checkpointing_enable()
-
-        centroids = torch.tensor(np.load("/work/2024/lixuanchen/project/SLAM-LLM/examples/st_covost2/scripts/bias_enjpeskoru_largev3.npy"), dtype=torch.float32)
-        self.bias_table = nn.Parameter(centroids.clone(), requires_grad=True)
-
         self.encoder_projector = EncoderProjectorQFormer()
         self.tokenizer = AutoTokenizer.from_pretrained(model_config.llm_path,local_files_only=True)
 
@@ -90,22 +77,8 @@ class CustomSLM(PreTrainedModel):
                 ):
         audio_mel = kwargs.get("audio_mel", None)
         audio_mel_post_mask = kwargs.get("audio_mel_post_mask", None) # 2x downsample for whisper
-        sources = kwargs.get("sources", None)
-        # print("dumb")
-        # print(sources)
-        # ``
-        # assert False
 
         encoder_outs = self.encoder(audio_mel.permute(0, 2, 1)).last_hidden_state # bs*seq*dim
-
-        lang_id = torch.tensor([LANG2ID[s] for s in sources],dtype=torch.long)
-        # # print(lang_id)
-        # # assert False 
-
-        b = self.bias_table[lang_id]                # [B, 1280]
-        encoder_outs = encoder_outs + b.unsqueeze(1)
-        # encoder_outs = self.projector(encoder_outs)
-
         encoder_outs = self.encoder_projector(encoder_outs, audio_mel_post_mask)
 
         input_ids = input_ids[:, 80:]
